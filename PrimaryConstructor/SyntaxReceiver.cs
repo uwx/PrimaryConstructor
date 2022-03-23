@@ -6,7 +6,7 @@ namespace PrimaryConstructor
 {
 	internal class SyntaxReceiver : ISyntaxReceiver
     {
-        public IList<ClassDeclarationSyntax> CandidateClasses { get; } = new List<ClassDeclarationSyntax>();
+        public IList<TypeDeclarationSyntax> CandidateClasses { get; } = new List<TypeDeclarationSyntax>();
 
         /// <summary>
         /// Called for every syntax node in the compilation, we can inspect the nodes and save any information useful for generation
@@ -14,11 +14,11 @@ namespace PrimaryConstructor
         public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
         {
             // any field with at least one attribute is a candidate for property generation
-            if (syntaxNode is ClassDeclarationSyntax classDeclarationSyntax &&
-                classDeclarationSyntax.AttributeLists.Count > 0)
+            if (syntaxNode is TypeDeclarationSyntax { AttributeLists.Count: > 0 } classDeclarationSyntax)
             {
                 CandidateClasses.Add(classDeclarationSyntax);
             }
+            
         }
     }
 }
