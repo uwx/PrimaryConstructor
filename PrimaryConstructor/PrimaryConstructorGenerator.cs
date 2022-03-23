@@ -1,20 +1,20 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using SmartAnalyzers.CSharpExtensions.Annotations;
 
 namespace PrimaryConstructor
 {
-    public class MemberSymbolInfo
+    public record MemberSymbolInfo
     {
-        public string Type { get; set; }
-        public string ParameterName { get; set; }
-        public string Name { get; set; }
-        public IEnumerable<AttributeData> Attributes { get; set; }
+        [InitRequired] public string Type { get; init; } = null!;
+        [InitRequired] public string ParameterName { get; init; } = null!;
+        [InitRequired] public string Name { get; init; } = null!;
+        [InitRequired] public IEnumerable<AttributeData> Attributes { get; init; } = null!;
     }
 
     [Generator]
@@ -148,22 +148,6 @@ namespace PrimaryConstructor
             }
             
             source.AppendLine("}");
-            
-//     partial {(classSymbol.IsStructType() ? "struct" : "class")} {classSymbol.Name}{generic}
-//     {{
-//         public {classSymbol.Name}({string.Join(", ", arguments)}){baseConstructorInheritance}
-//         {{");
-//
-//             foreach (var item in memberList)
-//             {
-//                 source.Append($@"
-//             this.{item.Name} = {item.ParameterName};");
-//             }
-//             source.Append(@"
-//         }
-//     }
-// }
-// ");
 
             return source.ToString();
         }
@@ -180,9 +164,11 @@ namespace PrimaryConstructor
         private static List<MemberSymbolInfo> GetMembers(INamedTypeSymbol classSymbol, bool recursive)
         {
             var fieldList = classSymbol.GetMembers().OfType<IFieldSymbol>()
-                .Where(x => x.CanBeReferencedByName && !x.IsStatic &&
-                            (x.IsReadOnly && !HasFieldInitializer(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
-                            !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute)))
+                .Where(x =>
+                    x.CanBeReferencedByName && !x.IsStatic &&
+                    (x.IsReadOnly && !HasFieldInitializer(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
+                    !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
+                )
                 .Select(it => new MemberSymbolInfo
                 {
                     Type = it.Type.ToDisplayString(PropertyTypeFormat),
@@ -193,10 +179,12 @@ namespace PrimaryConstructor
                 .ToList();
 
             var props = classSymbol.GetMembers().OfType<IPropertySymbol>()
-                .Where(x => x.CanBeReferencedByName && !x.IsStatic &&
-                            (x.IsReadOnly && !HasPropertyInitializer(x) && IsAutoProperty(x) || 
-                                HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
-                            !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute)))
+                .Where(x =>
+                    x.CanBeReferencedByName && !x.IsStatic &&
+                    (x.IsReadOnly && !HasPropertyInitializer(x) && IsAutoProperty(x) || 
+                    HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
+                    !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
+                )
                 .Select(it => new MemberSymbolInfo
                 {
                     Type = it.Type.ToDisplayString(PropertyTypeFormat),
@@ -204,6 +192,7 @@ namespace PrimaryConstructor
                     Name = it.Name,
                     Attributes = it.GetAttributes()
                 });
+
             fieldList.AddRange(props);
 
             //context.Compilation.GetSemanticModel();
