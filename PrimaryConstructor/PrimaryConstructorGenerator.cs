@@ -1,6 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -18,28 +21,49 @@ namespace PrimaryConstructor
     }
 
     [Generator]
-    internal class PrimaryConstructorGenerator : ISourceGenerator
+    internal class PrimaryConstructorGenerator : IIncrementalGenerator
     {
-        public void Initialize(GeneratorInitializationContext context)
+        public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            context.RegisterForSyntaxNotifications(() => new SyntaxReceiver());
+#if DEBUG
+            // SpinWait.SpinUntil(() => Debugger.IsAttached);
+#endif
+
+            var sources = context.SyntaxProvider
+                .CreateSyntaxProvider(IsCandidate, Transform)
+                .Where(static s => s != null);
+
+            context.RegisterSourceOutput(sources, (ctx, t) => ctx.AddSource(t!.Value.FileName + ".g.cs", t.Value.SourceText));
         }
 
-        public void Execute(GeneratorExecutionContext context)
+        private static bool IsCandidate(SyntaxNode node, CancellationToken cancellationToken)
         {
-            if (context.SyntaxReceiver is not SyntaxReceiver receiver)
-                return;
-
-            var classSymbols = GetClassSymbols(context, receiver);
-            var classNames = new Dictionary<string, int>();
-            foreach (var classSymbol in classSymbols)
+            if (node is not (TypeDeclarationSyntax typeDeclaration and (ClassDeclarationSyntax or StructDeclarationSyntax)) || cancellationToken.IsCancellationRequested)
             {
-                classNames.TryGetValue(classSymbol.Name, out var i);
-                var name = i == 0 ? classSymbol.Name : $"{classSymbol.Name}{i + 1}";
-                classNames[classSymbol.Name] = i + 1;
-                context.AddSource($"{name}.PrimaryConstructor.g.cs",
-                    SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8));
+                return false;
             }
+
+            return typeDeclaration.AttributeLists
+                .SelectMany(l => l.Attributes)
+                .Any();
+        }
+        
+        private static (string FileName, SourceText SourceText)? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
+        {
+            var typeDeclaration = (TypeDeclarationSyntax)context.Node;
+            if (cancellationToken.IsCancellationRequested || !typeDeclaration.ContainsAttribute(context.SemanticModel, GetAttributeSymbol(context.SemanticModel)))
+            {
+                return null;
+            }
+            
+            var classSymbol = context.SemanticModel.GetDeclaredSymbol(typeDeclaration)!;
+            
+            return (classSymbol.ToDisplayString(FileNameFormat), SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8));
+        }
+
+        private static INamedTypeSymbol GetAttributeSymbol(SemanticModel model)
+        {
+            return model.Compilation.GetSymbolByType<PrimaryConstructorAttribute>();
         }
 
         private static bool HasFieldInitializer(IFieldSymbol symbol)
@@ -76,6 +100,13 @@ namespace PrimaryConstructor
                                   SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
                                   SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
         );
+        
+        private static readonly SymbolDisplayFormat FileNameFormat = new(
+            globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Omitted,
+            typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            genericsOptions: SymbolDisplayGenericsOptions.None,
+            miscellaneousOptions: SymbolDisplayMiscellaneousOptions.None
+        );
 
         private static string CreatePrimaryConstructor(INamedTypeSymbol classSymbol)
         {
@@ -97,57 +128,51 @@ namespace PrimaryConstructor
                 IndentationString = "    "
             };
 
-            source.AppendLine($"namespace {namespaceName}");
-            source.AppendLine("{");
+            source.AppendLine($"namespace {namespaceName};");
+            
+            var ct = classSymbol.ContainingType;
+            while (ct != null)
+            {
+                var ctFullTypeName = classSymbol.ToDisplayString(TypeFormat);
+                var ctGeneric = ctFullTypeName.IndexOf('<') < 0
+                    ? ""
+                    : ctFullTypeName.Substring(ctFullTypeName.IndexOf('<'));
 
+                source.AppendLine($"partial {(ct.IsStructType() ? "struct" : "class")} {ct.Name}{ctGeneric}");
+                source.AppendLine("{");
+                source.IncreaseIndent();
+                ct = ct.ContainingType;
+            }
+
+            var fullTypeName = classSymbol.ToDisplayString(TypeFormat);
+            var generic = fullTypeName.IndexOf('<') < 0
+                ? ""
+                : fullTypeName.Substring(fullTypeName.IndexOf('<'));
+
+            source.AppendLine($"partial {(classSymbol.IsStructType() ? "struct" : "class")} {classSymbol.Name}{generic}");
+            source.AppendLine("{");
             using (source.IncreaseIndent())
             {
-                var ct = classSymbol.ContainingType;
-                while (ct != null)
-                {
-                    var ctFullTypeName = classSymbol.ToDisplayString(TypeFormat);
-                    var ctGeneric = ctFullTypeName.IndexOf('<') < 0
-                        ? ""
-                        : ctFullTypeName.Substring(ctFullTypeName.IndexOf('<'));
-
-                    source.AppendLine($"partial {(ct.IsStructType() ? "struct" : "class")} {ct.Name}{ctGeneric}");
-                    source.AppendLine("{");
-                    source.IncreaseIndent();
-                    ct = ct.ContainingType;
-                }
-
-                var fullTypeName = classSymbol.ToDisplayString(TypeFormat);
-                var generic = fullTypeName.IndexOf('<') < 0
-                    ? ""
-                    : fullTypeName.Substring(fullTypeName.IndexOf('<'));
-
-                source.AppendLine($"partial {(classSymbol.IsStructType() ? "struct" : "class")} {classSymbol.Name}{generic}");
+                source.AppendLine($"public {classSymbol.Name}({string.Join(", ", arguments)}){baseConstructorInheritance}");
                 source.AppendLine("{");
                 using (source.IncreaseIndent())
                 {
-                    source.AppendLine($"public {classSymbol.Name}({string.Join(", ", arguments)}){baseConstructorInheritance}");
-                    source.AppendLine("{");
-                    using (source.IncreaseIndent())
-                    {
-                         foreach (var item in memberList)
-                         {
-                             source.AppendLine($@"this.{item.Name} = {item.ParameterName};");
-                         }
-                    }
-                    source.AppendLine("}");
+                     foreach (var item in memberList)
+                     {
+                         source.AppendLine($@"this.{item.Name} = {item.ParameterName};");
+                     }
                 }
                 source.AppendLine("}");
-            
-                ct = classSymbol.ContainingType;
-                while (ct != null)
-                {
-                    source.DecreaseIndent();
-                    source.AppendLine("}");
-                    ct = ct.ContainingType;
-                }
             }
-            
             source.AppendLine("}");
+        
+            ct = classSymbol.ContainingType;
+            while (ct != null)
+            {
+                source.DecreaseIndent();
+                source.AppendLine("}");
+                ct = ct.ContainingType;
+            }
 
             return source.ToString();
         }
@@ -161,66 +186,50 @@ namespace PrimaryConstructor
             return fields.Any(field => !field.CanBeReferencedByName && SymbolEqualityComparer.Default.Equals(field.AssociatedSymbol, propertySymbol));
         }
 
-        private static List<MemberSymbolInfo> GetMembers(INamedTypeSymbol classSymbol, bool recursive)
+        private static IReadOnlyList<MemberSymbolInfo> GetMembers(INamedTypeSymbol classSymbol, bool recursive)
         {
-            var fieldList = classSymbol.GetMembers().OfType<IFieldSymbol>()
-                .Where(x =>
+            var fields = 
+                from x in classSymbol.GetMembers().OfType<IFieldSymbol>()
+                where
                     x.CanBeReferencedByName && !x.IsStatic &&
                     (x.IsReadOnly && !HasFieldInitializer(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
                     !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
-                )
-                .Select(it => new MemberSymbolInfo
+                select new MemberSymbolInfo
                 {
-                    Type = it.Type.ToDisplayString(PropertyTypeFormat),
-                    ParameterName = ToCamelCase(it.Name),
-                    Name = it.Name,
-                    Attributes = it.GetAttributes()
-                })
-                .ToList();
+                    Type = x.Type.ToDisplayString(PropertyTypeFormat),
+                    ParameterName = ToCamelCase(x.Name),
+                    Name = x.Name,
+                    Attributes = x.GetAttributes()
+                };
 
-            var props = classSymbol.GetMembers().OfType<IPropertySymbol>()
-                .Where(x =>
+            var props = 
+                from x in classSymbol.GetMembers().OfType<IPropertySymbol>()
+                where
                     x.CanBeReferencedByName && !x.IsStatic &&
-                    (x.IsReadOnly && !HasPropertyInitializer(x) && IsAutoProperty(x) || 
-                    HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
+                    (x.IsReadOnly && !HasPropertyInitializer(x) && IsAutoProperty(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) &&
                     !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
-                )
-                .Select(it => new MemberSymbolInfo
+                select new MemberSymbolInfo
                 {
-                    Type = it.Type.ToDisplayString(PropertyTypeFormat),
-                    ParameterName = ToCamelCase(it.Name),
-                    Name = it.Name,
-                    Attributes = it.GetAttributes()
-                });
+                    Type = x.Type.ToDisplayString(PropertyTypeFormat),
+                    ParameterName = ToCamelCase(x.Name),
+                    Name = x.Name,
+                    Attributes = x.GetAttributes()
+                };
 
-            fieldList.AddRange(props);
-
-            //context.Compilation.GetSemanticModel();
+            fields = fields.Concat(props);
 
             if (recursive && classSymbol.BaseType != null && HasAttribute(classSymbol.BaseType, nameof(PrimaryConstructorAttribute)))
             {
-                fieldList.AddRange(GetMembers(classSymbol.BaseType, true));
+                fields = fields.Concat(GetMembers(classSymbol.BaseType, true));
             }
 
-            return fieldList;
+            return fields.ToArray();
         }
 
         private static string ToCamelCase(string name)
         {
             name = name.TrimStart('_');
             return name.Substring(0, 1).ToLowerInvariant() + name.Substring(1);
-        }
-        
-        private static IEnumerable<INamedTypeSymbol> GetClassSymbols(GeneratorExecutionContext context, SyntaxReceiver receiver)
-        {
-            var compilation = context.Compilation;
-
-            return
-                from clazz in receiver.CandidateClasses
-                let model = compilation.GetSemanticModel(clazz.SyntaxTree)
-                select model.GetDeclaredSymbol(clazz)! into classSymbol
-                where HasAttribute(classSymbol, nameof(PrimaryConstructorAttribute))
-                select classSymbol;
         }
     }
 }

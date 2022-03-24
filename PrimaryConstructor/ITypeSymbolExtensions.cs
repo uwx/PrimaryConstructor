@@ -1,10 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
+using System.Linq;
 
 namespace PrimaryConstructor;
 
@@ -28,4 +25,22 @@ internal static class TypeSymbolExtensions
     public static bool IsAnonymousType([NotNullWhen(true)] this INamedTypeSymbol? symbol)
         => symbol?.IsAnonymousType == true;
 
+    public static bool HasAttribute(this ISymbol symbol, INamedTypeSymbol attribute)
+    {
+        return symbol.GetAttributes().Any(a => attribute.Equals(a.AttributeClass, SymbolEqualityComparer.Default));
+    }
+    
+    public static bool ContainsAttribute(this SyntaxNode node, SemanticModel semanticModel, INamedTypeSymbol attributeSymbol)
+    {
+        var symbol = semanticModel.GetDeclaredSymbol(node);
+
+        return symbol is not null && symbol.HasAttribute(attributeSymbol);
+    }
+
+    public static INamedTypeSymbol GetSymbolByType<T>(this Compilation compilation)
+    {
+        var name = typeof(T).FullName;
+
+        return compilation.GetTypeByMetadataName(name) ?? throw new TypeAccessException($"{name} could not be found in compilation.");
+    }
 }
