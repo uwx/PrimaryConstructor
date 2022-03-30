@@ -33,7 +33,15 @@ namespace PrimaryConstructor
                 .CreateSyntaxProvider(IsCandidate, Transform)
                 .Where(static s => s != null);
 
-            context.RegisterSourceOutput(sources, (ctx, t) => ctx.AddSource(t!.Value.FileName + ".g.cs", t.Value.SourceText));
+            context.RegisterSourceOutput(sources, GenerateCode);
+        }
+
+        private static void GenerateCode(SourceProductionContext ctx, INamedTypeSymbol? classSymbol)
+        {
+            ctx.AddSource(
+                classSymbol!.ToDisplayString(FileNameFormat) + ".g.cs",
+                SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8)
+            );
         }
 
         private static bool IsCandidate(SyntaxNode node, CancellationToken cancellationToken)
@@ -48,7 +56,7 @@ namespace PrimaryConstructor
                 .Any();
         }
         
-        private static (string FileName, SourceText SourceText)? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
+        private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
         {
             var typeDeclaration = (TypeDeclarationSyntax)context.Node;
             if (cancellationToken.IsCancellationRequested || !typeDeclaration.ContainsAttribute(context.SemanticModel, GetAttributeSymbol(context.SemanticModel)))
@@ -58,7 +66,7 @@ namespace PrimaryConstructor
             
             var classSymbol = context.SemanticModel.GetDeclaredSymbol(typeDeclaration)!;
             
-            return (classSymbol.ToDisplayString(FileNameFormat), SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8));
+            return classSymbol;
         }
 
         private static INamedTypeSymbol GetAttributeSymbol(SemanticModel model)
