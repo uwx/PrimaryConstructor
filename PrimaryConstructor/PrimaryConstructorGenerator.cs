@@ -39,8 +39,8 @@ namespace PrimaryConstructor
         private static void GenerateCode(SourceProductionContext ctx, INamedTypeSymbol? classSymbol)
         {
             ctx.AddSource(
-                classSymbol!.ToDisplayString(FileNameFormat) + ".g.cs",
-                SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8)
+                $"{classSymbol!.ToDisplayString(FileNameFormat)}-{Guid.NewGuid()}.g.cs",
+                CreatePrimaryConstructor(classSymbol)
             );
         }
 
@@ -237,7 +237,17 @@ namespace PrimaryConstructor
         private static string ToCamelCase(string name)
         {
             name = name.TrimStart('_');
-            return name.Substring(0, 1).ToLowerInvariant() + name.Substring(1);
+            if (name.Length == 0)
+            {
+                return "_noName_" + Guid.NewGuid().ToString().Replace("-", "");
+            }
+
+            if (name.Length == 1)
+            {
+                return name.ToLowerInvariant();
+            }
+
+            return char.ToLowerInvariant(name[0]) + name.Substring(1);
         }
     }
 }
