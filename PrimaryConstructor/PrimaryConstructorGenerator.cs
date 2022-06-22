@@ -9,13 +9,16 @@ using SmartAnalyzers.CSharpExtensions.Annotations;
 
 namespace PrimaryConstructor
 {
-    public record MemberSymbolInfo
-    {
-        [InitRequired] public string Type { get; init; } = null!;
-        [InitRequired] public string ParameterName { get; init; } = null!;
-        [InitRequired] public string Name { get; init; } = null!;
-        [InitRequired] public IEnumerable<AttributeData> Attributes { get; init; } = null!;
-    }
+    public readonly record struct MemberSymbolInfo(
+        string Type,
+        string ParameterName,
+        string Name,
+        IEnumerable<AttributeData> Attributes
+    );
+
+    public readonly record struct ConstructorSymbolInfo(
+        MemberSymbolInfo[] Parameters
+    );
 
     [Generator]
     internal class PrimaryConstructorGenerator : IIncrementalGenerator
@@ -78,22 +81,6 @@ namespace PrimaryConstructor
             return model.Compilation.GetSymbolByType<PrimaryConstructorAttribute>();
         }
 
-        private static bool HasFieldInitializer(IFieldSymbol symbol)
-        {
-            var field = symbol.DeclaringSyntaxReferences.ElementAtOrDefault(0)?.GetSyntax() as VariableDeclaratorSyntax;
-            return field?.Initializer != null;
-        }
-
-        private static bool HasPropertyInitializer(IPropertySymbol symbol)
-        {
-            var property = symbol.DeclaringSyntaxReferences.ElementAtOrDefault(0)?.GetSyntax() as PropertyDeclarationSyntax;
-            return property?.Initializer != null;
-        }
-
-        private static bool HasAttribute(ISymbol symbol, string name) => symbol
-            .GetAttributes()
-            .Any(x => x.AttributeClass?.Name == name);
-
         private static readonly SymbolDisplayFormat TypeFormat = new(
             globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
             typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
@@ -104,15 +91,6 @@ namespace PrimaryConstructor
                                   SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
         );
 
-        private static readonly SymbolDisplayFormat PropertyTypeFormat = new(
-            globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
-            typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
-            genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
-            miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes |
-                                  SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
-                                  SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
-        );
-        
         private static readonly SymbolDisplayFormat FileNameFormat = new(
             globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Omitted,
             typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
@@ -124,17 +102,19 @@ namespace PrimaryConstructor
         {
             var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
 
-            var baseClassConstructorArgs = classSymbol.BaseType != null && HasAttribute(classSymbol.BaseType, nameof(PrimaryConstructorAttribute))
-                ? GetMembers(classSymbol.BaseType, true)
+            var baseClassConstructorArgs = classSymbol.BaseType != null
+                ? classSymbol.BaseType.HasAttribute(nameof(PrimaryConstructorAttribute)) // try looking for [PrimaryConstructor] in the base type
+                    ? classSymbol.BaseType.GetGenerationMembers(true) // get base type members
+                    : classSymbol.BaseType.GetRelevantConstructor()?.Parameters // otherwise, find ctor with [UseForPrimaryConstructor] or find greediest constructor
                 : null;
             var baseConstructorInheritance = baseClassConstructorArgs?.Count > 0
                 ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(it => it.ParameterName))})"
                 : "";
 
-            var memberList = GetMembers(classSymbol, false);
+            var memberList = classSymbol.GetGenerationMembers(false);
             var arguments = (baseClassConstructorArgs == null ? memberList : memberList.Concat(baseClassConstructorArgs))
                 .Select(it => $"{it.Type} {it.ParameterName}");
-            
+
             var source = new IndentedStringBuilder
             {
                 IndentationString = "    "
@@ -173,8 +153,10 @@ namespace PrimaryConstructor
                      {
                          source.AppendLine($@"this.{item.Name} = {item.ParameterName};");
                      }
+                     source.AppendLine("this.Constructor();");
                 }
                 source.AppendLine("}");
+                source.AppendLine("partial void Constructor();");
             }
             source.AppendLine("}");
         
@@ -189,7 +171,36 @@ namespace PrimaryConstructor
             return source.ToString();
         }
 
-        private static bool IsAutoProperty(IPropertySymbol propertySymbol)
+    }
+
+    internal static class RosylnExtensions
+    {
+        private static readonly SymbolDisplayFormat PropertyTypeFormat = new(
+            globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
+            typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+            miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes |
+                                  SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
+                                  SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
+        );
+
+        public static bool HasFieldInitializer(this IFieldSymbol symbol)
+        {
+            var field = symbol.DeclaringSyntaxReferences.ElementAtOrDefault(0)?.GetSyntax() as VariableDeclaratorSyntax;
+            return field?.Initializer != null;
+        }
+
+        public static bool HasPropertyInitializer(this IPropertySymbol symbol)
+        {
+            var property = symbol.DeclaringSyntaxReferences.ElementAtOrDefault(0)?.GetSyntax() as PropertyDeclarationSyntax;
+            return property?.Initializer != null;
+        }
+
+        public static bool HasAttribute(this ISymbol symbol, string name) => symbol
+            .GetAttributes()
+            .Any(x => x.AttributeClass?.Name == name);
+
+        public static bool IsAutoProperty(this IPropertySymbol propertySymbol)
         {
             // Get fields declared in the same type as the property
             var fields = propertySymbol.ContainingType.GetMembers().OfType<IFieldSymbol>();
@@ -198,18 +209,18 @@ namespace PrimaryConstructor
             return fields.Any(field => !field.CanBeReferencedByName && SymbolEqualityComparer.Default.Equals(field.AssociatedSymbol, propertySymbol));
         }
 
-        private static IReadOnlyList<MemberSymbolInfo> GetMembers(INamedTypeSymbol classSymbol, bool recursive)
+        public static IReadOnlyList<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol, bool recursive)
         {
             var fields = 
                 from x in classSymbol.GetMembers().OfType<IFieldSymbol>()
                 where
                     x.CanBeReferencedByName && !x.IsStatic &&
-                    (x.IsReadOnly && !HasFieldInitializer(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) && 
-                    !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
+                    (x.IsReadOnly && !x.HasFieldInitializer() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) && 
+                    !x.HasAttribute(nameof(IgnorePrimaryConstructorAttribute))
                 select new MemberSymbolInfo
                 {
                     Type = x.Type.ToDisplayString(PropertyTypeFormat),
-                    ParameterName = ToCamelCase(x.Name),
+                    ParameterName = x.Name.ToCamelCase(),
                     Name = x.Name,
                     Attributes = x.GetAttributes()
                 };
@@ -218,27 +229,63 @@ namespace PrimaryConstructor
                 from x in classSymbol.GetMembers().OfType<IPropertySymbol>()
                 where
                     x.CanBeReferencedByName && !x.IsStatic &&
-                    (x.IsReadOnly && !HasPropertyInitializer(x) && IsAutoProperty(x) || HasAttribute(x, nameof(IncludePrimaryConstructorAttribute))) &&
-                    !HasAttribute(x, nameof(IgnorePrimaryConstructorAttribute))
+                    (x.IsReadOnly && !x.HasPropertyInitializer() && x.IsAutoProperty() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) &&
+                    !x.HasAttribute(nameof(IgnorePrimaryConstructorAttribute))
                 select new MemberSymbolInfo
                 {
                     Type = x.Type.ToDisplayString(PropertyTypeFormat),
-                    ParameterName = ToCamelCase(x.Name),
+                    ParameterName = x.Name.ToCamelCase(),
                     Name = x.Name,
                     Attributes = x.GetAttributes()
                 };
 
             fields = fields.Concat(props);
 
-            if (recursive && classSymbol.BaseType != null && HasAttribute(classSymbol.BaseType, nameof(PrimaryConstructorAttribute)))
+            if (recursive && classSymbol.BaseType != null && classSymbol.BaseType.HasAttribute(nameof(PrimaryConstructorAttribute)))
             {
-                fields = fields.Concat(GetMembers(classSymbol.BaseType, true));
+                fields = fields.Concat(classSymbol.BaseType.GetGenerationMembers(true));
             }
 
             return fields.ToArray();
         }
 
-        private static string ToCamelCase(string name)
+        public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol)
+        {
+            var bestConstructor = classSymbol.GetMembers()
+                .OfType<IMethodSymbol>()
+                .Where(e => e.MethodKind == MethodKind.Constructor)
+                .FirstOrDefault(e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
+
+            if (bestConstructor == null)
+            {
+                bestConstructor = classSymbol.GetMembers()
+                    .OfType<IMethodSymbol>()
+                    .Where(e => e.MethodKind == MethodKind.Constructor)
+                    .OrderByDescending(e => e.Parameters.Length)
+                    .FirstOrDefault();
+            }
+
+            if (bestConstructor == null)
+            {
+                return null;
+            }
+
+            return new ConstructorSymbolInfo
+            {
+                Parameters = bestConstructor
+                    .Parameters
+                    .Select((e, i) => new MemberSymbolInfo
+                    {
+                        Type = e.Type.ToDisplayString(PropertyTypeFormat),
+                        ParameterName = string.IsNullOrWhiteSpace(e.Name) ? $"__param{i}" : e.Name,
+                        Name = string.IsNullOrWhiteSpace(e.Name) ? $"Param{i}" : e.Name,
+                        Attributes = Array.Empty<AttributeData>()
+                    })
+                    .ToArray()
+            };
+        }
+
+        public static string ToCamelCase(this string name)
         {
             name = name.TrimStart('_');
             if (name.Length == 0)
