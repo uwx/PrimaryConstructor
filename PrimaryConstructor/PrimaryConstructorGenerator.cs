@@ -102,17 +102,13 @@ namespace PrimaryConstructor
         {
             var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
 
-            var baseClassConstructorArgs = classSymbol.BaseType != null
-                ? classSymbol.BaseType.HasAttribute(nameof(PrimaryConstructorAttribute)) // try looking for [PrimaryConstructor] in the base type
-                    ? classSymbol.BaseType.GetGenerationMembers(true) // get base type members
-                    : classSymbol.BaseType.GetRelevantConstructor()?.Parameters // otherwise, find ctor with [UseForPrimaryConstructor] or find greediest constructor
-                : null;
-            var baseConstructorInheritance = baseClassConstructorArgs?.Count > 0
+            var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers();
+            var baseConstructorInheritance = baseClassConstructorArgs.Count > 0
                 ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(it => it.ParameterName))})"
                 : "";
 
-            var memberList = classSymbol.GetGenerationMembers(false);
-            var arguments = (baseClassConstructorArgs == null ? memberList : memberList.Concat(baseClassConstructorArgs))
+            var memberList = classSymbol.GetGenerationMembers();
+            var arguments = (baseClassConstructorArgs.Count == 0 ? memberList : memberList.Concat(baseClassConstructorArgs))
                 .Select(it => $"{it.Type} {it.ParameterName}");
 
             var source = new IndentedStringBuilder
@@ -209,7 +205,7 @@ namespace PrimaryConstructor
             return fields.Any(field => !field.CanBeReferencedByName && SymbolEqualityComparer.Default.Equals(field.AssociatedSymbol, propertySymbol));
         }
 
-        public static IReadOnlyList<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol, bool recursive)
+        public static IReadOnlyList<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol)
         {
             var fields = 
                 from x in classSymbol.GetMembers().OfType<IFieldSymbol>()
@@ -241,9 +237,29 @@ namespace PrimaryConstructor
 
             fields = fields.Concat(props);
 
-            if (recursive && classSymbol.BaseType != null && classSymbol.BaseType.HasAttribute(nameof(PrimaryConstructorAttribute)))
+            return fields.ToArray();
+        }
+
+        public static IReadOnlyList<MemberSymbolInfo> GetBaseTypeGenerationMembers(this INamedTypeSymbol? classSymbol)
+        {
+            var fields = Enumerable.Empty<MemberSymbolInfo>();
+
+            while ((classSymbol = classSymbol?.BaseType) != null)
             {
-                fields = fields.Concat(classSymbol.BaseType.GetGenerationMembers(true));
+                if (classSymbol.Name is nameof(Object) or nameof(ValueType))
+                {
+                    break;
+                }
+
+                if (classSymbol.HasAttribute(nameof(PrimaryConstructorAttribute)))
+                {
+                    fields = fields.Concat(classSymbol.GetGenerationMembers());
+                }
+                else if (classSymbol.GetRelevantConstructor() is { } relevantConstructor &&
+                         relevantConstructor.Parameters.Length > 0)
+                {
+                    fields = fields.Concat(relevantConstructor.Parameters);
+                }
             }
 
             return fields.ToArray();
