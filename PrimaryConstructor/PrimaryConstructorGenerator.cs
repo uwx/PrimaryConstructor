@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using SmartAnalyzers.CSharpExtensions.Annotations;
+using ISymbol = Microsoft.CodeAnalysis.ISymbol;
 
 namespace PrimaryConstructor
 {
@@ -19,6 +20,7 @@ namespace PrimaryConstructor
     public readonly record struct ConstructorSymbolInfo(
         MemberSymbolInfo[] Parameters
     );
+    
 
     [Generator]
     internal class PrimaryConstructorGenerator : IIncrementalGenerator
@@ -32,15 +34,9 @@ namespace PrimaryConstructor
             var sources = context.SyntaxProvider
                 .CreateSyntaxProvider(IsCandidate, Transform)
                 .Where(static s => s != null)
-                .Collect();
+                .WithComparer(SymbolEqualityComparer.IncludeNullability);
 
-            context.RegisterSourceOutput(sources, static (context, symbols) =>
-            {
-                foreach (var classSymbol in symbols.DistinctBy(static e => e!.ToDisplayString()))
-                {
-                    GenerateCode(context, classSymbol);
-                }
-            });
+            context.RegisterSourceOutput(sources, GenerateCode);
         }
 
         private static void GenerateCode(SourceProductionContext ctx, INamedTypeSymbol? classSymbol)
@@ -60,7 +56,7 @@ namespace PrimaryConstructor
 
             return typeDeclaration.AttributeLists
                 .SelectMany(l => l.Attributes)
-                .Any();
+                .Any(a => a.IsNamed("PrimaryConstructor"));
         }
         
         private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
@@ -207,8 +203,10 @@ namespace PrimaryConstructor
 
         public static IReadOnlyList<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol)
         {
+            var members = classSymbol.GetMembers();
+
             var fields = 
-                from x in classSymbol.GetMembers().OfType<IFieldSymbol>()
+                from x in members.OfType<IFieldSymbol>()
                 where
                     x.CanBeReferencedByName && !x.IsStatic &&
                     (x.IsReadOnly && !x.HasFieldInitializer() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) && 
@@ -222,7 +220,7 @@ namespace PrimaryConstructor
                 };
 
             var props = 
-                from x in classSymbol.GetMembers().OfType<IPropertySymbol>()
+                from x in members.OfType<IPropertySymbol>()
                 where
                     x.CanBeReferencedByName && !x.IsStatic &&
                     (x.IsReadOnly && !x.HasPropertyInitializer() && x.IsAutoProperty() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) &&
@@ -267,15 +265,17 @@ namespace PrimaryConstructor
 
         public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol)
         {
-            var bestConstructor = classSymbol.GetMembers()
-                .OfType<IMethodSymbol>()
+            var members = classSymbol.GetMembers().OfType<IMethodSymbol>();
+
+            // ReSharper disable once PossibleMultipleEnumeration
+            var bestConstructor = members
                 .Where(e => e.MethodKind == MethodKind.Constructor)
                 .FirstOrDefault(e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
 
             if (bestConstructor == null)
             {
-                bestConstructor = classSymbol.GetMembers()
-                    .OfType<IMethodSymbol>()
+                // ReSharper disable once PossibleMultipleEnumeration
+                bestConstructor = members
                     .Where(e => e.MethodKind == MethodKind.Constructor)
                     .OrderByDescending(e => e.Parameters.Length)
                     .FirstOrDefault();

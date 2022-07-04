@@ -2,6 +2,8 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.CodeAnalysis;
 using System.Linq;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace PrimaryConstructor;
 
@@ -43,4 +45,11 @@ internal static class TypeSymbolExtensions
 
         return compilation.GetTypeByMetadataName(name) ?? throw new TypeAccessException($"{name} could not be found in compilation.");
     }
+    
+    // https://github.com/CollinAlpert/Lombok.NET/blob/0f8419a47ad8ae11d1f7a3e4663b94adcc7368d3/Lombok.NET/Extensions/SyntaxNodeExtensions.cs#L333
+    public static bool IsNamed(this AttributeSyntax attribute, string name)
+    {
+        return attribute.Name.IsKind(SyntaxKind.IdentifierName) && ((IdentifierNameSyntax)attribute.Name).Identifier.Text == name;
+    }
+
 }
