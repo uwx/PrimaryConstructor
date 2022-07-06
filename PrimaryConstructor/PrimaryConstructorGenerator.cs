@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using SmartAnalyzers.CSharpExtensions.Annotations;
 using ISymbol = Microsoft.CodeAnalysis.ISymbol;
 
 namespace PrimaryConstructor;
@@ -14,7 +14,7 @@ public readonly record struct MemberSymbolInfo(
     string Type,
     string ParameterName,
     string Name,
-    IEnumerable<AttributeData> Attributes
+    ImmutableArray<AttributeData> Attributes
 );
 
 public readonly record struct ConstructorSymbolInfo(
@@ -25,6 +25,8 @@ public readonly record struct ConstructorSymbolInfo(
 [Generator]
 internal class PrimaryConstructorGenerator : IIncrementalGenerator
 {
+    private static readonly string AttributeName = nameof(PrimaryConstructorAttribute).Replace("Attribute", "");
+    
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
 #if DEBUG
@@ -55,8 +57,8 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         }
 
         return typeDeclaration.AttributeLists
-            .SelectMany(l => l.Attributes)
-            .Any(a => a.IsNamed("PrimaryConstructor"));
+            .SelectMany(static l => l.Attributes)
+            .Any(static a => a.IsNamed(AttributeName));
     }
         
     private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
@@ -98,22 +100,19 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
     {
         var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
 
-        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers();
-        var baseConstructorInheritance = baseClassConstructorArgs.Count > 0
-            ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(it => it.ParameterName))})"
+        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers().ToArray();
+        var baseConstructorInheritance = baseClassConstructorArgs.Length > 0
+            ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(static m => m.ParameterName))})"
             : "";
 
-        var memberList = classSymbol.GetGenerationMembers();
-        var arguments = (baseClassConstructorArgs.Count == 0 ? memberList : memberList.Concat(baseClassConstructorArgs))
-            .Select(it => $"{it.Type} {it.ParameterName}");
+        var memberList = classSymbol.GetGenerationMembers().ToArray();
+        var arguments = (baseClassConstructorArgs.Length == 0 ? memberList : memberList.Concat(baseClassConstructorArgs))
+            .Select(static m => $"{m.Type} {m.ParameterName}");
 
-        var source = new IndentedStringBuilder
-        {
-            IndentationString = "    "
-        };
+        var source = new IndentedStringBuilder(' ', 4);
 
         source.AppendLine($"namespace {namespaceName};");
-            
+
         var ct = classSymbol.ContainingType;
         while (ct != null)
         {
@@ -162,7 +161,6 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
 
         return source.ToString();
     }
-
 }
 
 internal static class RosylnExtensions
@@ -201,83 +199,86 @@ internal static class RosylnExtensions
         return fields.Any(field => !field.CanBeReferencedByName && SymbolEqualityComparer.Default.Equals(field.AssociatedSymbol, propertySymbol));
     }
 
-    public static IReadOnlyList<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol)
+    public static IEnumerable<MemberSymbolInfo> GetGenerationMembers(this INamedTypeSymbol classSymbol)
     {
-        var members = classSymbol.GetMembers();
+        const string includePrimaryConstructor = nameof(IncludePrimaryConstructorAttribute);
+        const string ignorePrimaryConstructor = nameof(IgnorePrimaryConstructorAttribute);
+        
+        foreach (var symbol in classSymbol.GetMembers())
+        {
+            if (!symbol.CanBeReferencedByName || symbol.IsStatic) continue;
 
-        var fields = 
-            from x in members.OfType<IFieldSymbol>()
-            where
-                x.CanBeReferencedByName && !x.IsStatic &&
-                (x.IsReadOnly && !x.HasFieldInitializer() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) && 
-                !x.HasAttribute(nameof(IgnorePrimaryConstructorAttribute))
-            select new MemberSymbolInfo
+            if (symbol is IFieldSymbol field)
             {
-                Type = x.Type.ToDisplayString(PropertyTypeFormat),
-                ParameterName = x.Name.ToCamelCase(),
-                Name = x.Name,
-                Attributes = x.GetAttributes()
-            };
-
-        var props = 
-            from x in members.OfType<IPropertySymbol>()
-            where
-                x.CanBeReferencedByName && !x.IsStatic &&
-                (x.IsReadOnly && !x.HasPropertyInitializer() && x.IsAutoProperty() || x.HasAttribute(nameof(IncludePrimaryConstructorAttribute))) &&
-                !x.HasAttribute(nameof(IgnorePrimaryConstructorAttribute))
-            select new MemberSymbolInfo
+                if ((!field.IsReadOnly || field.HasFieldInitializer()) && !field.HasAttribute(includePrimaryConstructor)) continue;
+                if (field.HasAttribute(ignorePrimaryConstructor)) continue;
+    
+                yield return new MemberSymbolInfo
+                {
+                    Type = field.Type.ToDisplayString(PropertyTypeFormat),
+                    ParameterName = field.Name.ToCamelCase(),
+                    Name = field.Name,
+                    Attributes = field.GetAttributes()
+                };
+            }
+            else if (symbol is IPropertySymbol prop)
             {
-                Type = x.Type.ToDisplayString(PropertyTypeFormat),
-                ParameterName = x.Name.ToCamelCase(),
-                Name = x.Name,
-                Attributes = x.GetAttributes()
-            };
-
-        fields = fields.Concat(props);
-
-        return fields.ToArray();
+                if ((!prop.IsReadOnly || prop.HasPropertyInitializer() || !prop.IsAutoProperty()) && !prop.HasAttribute(includePrimaryConstructor)) continue;
+                if (prop.HasAttribute(ignorePrimaryConstructor)) continue;
+                
+                yield return new MemberSymbolInfo
+                {
+                    Type = prop.Type.ToDisplayString(PropertyTypeFormat),
+                    ParameterName = prop.Name.ToCamelCase(),
+                    Name = prop.Name,
+                    Attributes = prop.GetAttributes()
+                };
+            }
+        }
     }
 
-    public static IReadOnlyList<MemberSymbolInfo> GetBaseTypeGenerationMembers(this INamedTypeSymbol? classSymbol)
+    public static IEnumerable<MemberSymbolInfo> GetBaseTypeGenerationMembers(this INamedTypeSymbol? classSymbol)
     {
-        var fields = Enumerable.Empty<MemberSymbolInfo>();
-
         while ((classSymbol = classSymbol?.BaseType) != null)
         {
             if (classSymbol.Name is nameof(Object) or nameof(ValueType))
             {
-                break;
+                yield break;
             }
 
             if (classSymbol.HasAttribute(nameof(PrimaryConstructorAttribute)))
             {
-                fields = fields.Concat(classSymbol.GetGenerationMembers());
+                foreach (var member in classSymbol.GetGenerationMembers())
+                {
+                    yield return member;
+                }
             }
             else if (classSymbol.GetRelevantConstructor() is { } relevantConstructor &&
                      relevantConstructor.Parameters.Length > 0)
             {
-                fields = fields.Concat(relevantConstructor.Parameters);
+                foreach (var parameter in relevantConstructor.Parameters)
+                {
+                    yield return parameter;
+                }
             }
         }
-
-        return fields.ToArray();
     }
 
     public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol)
     {
-        var members = classSymbol.GetMembers().OfType<IMethodSymbol>();
+        var members = classSymbol.GetMembers()
+            .OfType<IMethodSymbol>()
+            .Where(static e => e.MethodKind == MethodKind.Constructor);
 
         // ReSharper disable once PossibleMultipleEnumeration
         var bestConstructor = members
-            .Where(e => e.MethodKind == MethodKind.Constructor)
-            .FirstOrDefault(e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
+            .FirstOrDefault(static e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
 
         if (bestConstructor == null)
         {
             // ReSharper disable once PossibleMultipleEnumeration
             bestConstructor = members
-                .Where(e => e.MethodKind == MethodKind.Constructor)
-                .OrderByDescending(e => e.Parameters.Length)
+                .OrderByDescending(static e => e.Parameters.Length)
                 .FirstOrDefault();
         }
 
@@ -290,12 +291,12 @@ internal static class RosylnExtensions
         {
             Parameters = bestConstructor
                 .Parameters
-                .Select((e, i) => new MemberSymbolInfo
+                .Select(static (e, i) => new MemberSymbolInfo
                 {
                     Type = e.Type.ToDisplayString(PropertyTypeFormat),
                     ParameterName = string.IsNullOrWhiteSpace(e.Name) ? $"__param{i}" : e.Name,
                     Name = string.IsNullOrWhiteSpace(e.Name) ? $"Param{i}" : e.Name,
-                    Attributes = Array.Empty<AttributeData>()
+                    Attributes = ImmutableArray<AttributeData>.Empty
                 })
                 .ToArray()
         };
@@ -304,69 +305,11 @@ internal static class RosylnExtensions
     public static string ToCamelCase(this string name)
     {
         name = name.TrimStart('_');
-        if (name.Length == 0)
+        return name.Length switch
         {
-            return "_noName_" + Guid.NewGuid().ToString().Replace("-", "");
-        }
-
-        if (name.Length == 1)
-        {
-            return name.ToLowerInvariant();
-        }
-
-        return char.ToLowerInvariant(name[0]) + name.Substring(1);
-    }
-}
-
-// MoreLINQ - Extensions to LINQ to Objects
-// Copyright (c) 2008 Jonathan Skeet. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-public static class MoreLinq
-{
-    // https://github.com/morelinq/MoreLINQ/blob/ee238241083a9b31dc03c39781b29f4189b4fe73/MoreLinq/DistinctBy.cs
-    /// <summary>
-    /// Returns all distinct elements of the given source, where "distinctness"
-    /// is determined via a projection and the specified comparer for the projected type.
-    /// </summary>
-    /// <remarks>
-    /// This operator uses deferred execution and streams the results, although
-    /// a set of already-seen keys is retained. If a key is seen multiple times,
-    /// only the first element with that key is returned.
-    /// </remarks>
-    /// <typeparam name="TSource">Type of the source sequence</typeparam>
-    /// <typeparam name="TKey">Type of the projected element</typeparam>
-    /// <param name="source">Source sequence</param>
-    /// <param name="keySelector">Projection for determining "distinctness"</param>
-    /// <param name="comparer">The equality comparer to use to determine whether or not keys are equal.
-    /// If null, the default equality comparer for <c>TSource</c> is used.</param>
-    /// <returns>A sequence consisting of distinct elements from the source sequence,
-    /// comparing them by the specified key projection.</returns>
-
-    public static IEnumerable<TSource> DistinctBy<TSource, TKey>(this IEnumerable<TSource> source,
-        Func<TSource, TKey> keySelector, IEqualityComparer<TKey>? comparer = null)
-    {
-        if (source == null) throw new ArgumentNullException(nameof(source));
-        if (keySelector == null) throw new ArgumentNullException(nameof(keySelector));
-
-        return _(); IEnumerable<TSource> _()
-        {
-            var knownKeys = new HashSet<TKey>(comparer);
-            foreach (var element in source)
-            {
-                if (knownKeys.Add(keySelector(element)))
-                    yield return element;
-            }
-        }
+            0 => "_noName_" + Guid.NewGuid().ToString().Replace("-", ""),
+            1 => name.ToLowerInvariant(),
+            _ => char.ToLowerInvariant(name[0]) + name.Substring(1)
+        };
     }
 }

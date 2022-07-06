@@ -1,21 +1,28 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace PrimaryConstructor;
 
-public class IndentedStringBuilder : IDisposable
+internal sealed class IndentedStringBuilder : IDisposable
 {
+    private readonly char _indentChar;
+    private readonly int _indentIncrement;
+
     private readonly StringBuilder _sb;
-    private string _indentationString = "\t";
-    private string _completeIndentationString = "";
-    private int _indent = 0;
+    private string _completeIndentationString = string.Empty;
+
+    private int _indent;
 
     /// <summary>
-    ///  Creates an IndentedStringBuilder
+    /// Creates an IndentedStringBuilder
     /// </summary>
-    public IndentedStringBuilder()
+    public IndentedStringBuilder(char indentChar, int indentIncrement)
     {
         _sb = new StringBuilder();
+        
+        _indentChar = indentChar;
+        _indentIncrement = indentIncrement;
     }
 
     /// <summary>
@@ -24,7 +31,7 @@ public class IndentedStringBuilder : IDisposable
     /// <param name="value"></param>
     public void Append(string value)
     {
-        _sb.Append(_completeIndentationString + value);
+        _sb.Append(_completeIndentationString).Append(value);
     }
 
     /// <summary>
@@ -33,21 +40,17 @@ public class IndentedStringBuilder : IDisposable
     /// <param name="value"></param>
     public void AppendLine(string value)
     {
-        Append(value + Environment.NewLine);
+        Append(value);
+        _sb.Append(Environment.NewLine);
     }
 
-    /// <summary>
-    /// The string/chars to use for indentation, t by default
-    /// </summary>
-    public string IndentationString
+    public void Append([InterpolatedStringHandlerArgument("")] ref AppendInterpolatedStringHandler handler)
     {
-        get => _indentationString;
-        set
-        {
-            _indentationString = value;
+    }
 
-            UpdateCompleteIndentationString();
-        }
+    public void AppendLine([InterpolatedStringHandlerArgument("")] ref AppendInterpolatedStringHandler handler)
+    {
+        _sb.Append(Environment.NewLine);
     }
 
     /// <summary>
@@ -55,10 +58,12 @@ public class IndentedStringBuilder : IDisposable
     /// </summary>
     private void UpdateCompleteIndentationString()
     {
-        _completeIndentationString = "";
+        if (_indent * _indentIncrement == _completeIndentationString.Length)
+        {
+            return;
+        }
 
-        for (var i = 0; i < _indent; i++)
-            _completeIndentationString += _indentationString;
+        _completeIndentationString = new string(_indentChar, _indent * _indentIncrement);
     }
 
     /// <summary>
@@ -90,7 +95,10 @@ public class IndentedStringBuilder : IDisposable
     /// <summary>
     /// Decreases indentation
     /// </summary>
-    public void Dispose()
+    /// <remarks>
+    /// Should only be called from <c>using</c> statement, call <see cref="DecreaseIndent"/> otherwise
+    /// </remarks>
+    void IDisposable.Dispose()
     {
         DecreaseIndent();
     }
@@ -102,5 +110,45 @@ public class IndentedStringBuilder : IDisposable
     public override string ToString()
     {
         return _sb.ToString();
+    }
+
+    [InterpolatedStringHandler]
+    public readonly struct AppendInterpolatedStringHandler
+    {
+        private readonly StringBuilder _sb;
+
+        public AppendInterpolatedStringHandler(int literalLength, int formattedCount, IndentedStringBuilder stringBuilder)
+        {
+            _sb = stringBuilder._sb;
+            _sb.Append(stringBuilder._completeIndentationString);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AppendLiteral(string s) => _sb.Append(s);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AppendFormatted<T>(T value)
+        {
+            if (value != null)
+            {
+                // ReSharper disable once RedundantToStringCallForValueType
+                _sb.Append(value.ToString());
+            }
+        }
+
+        // ReSharper disable once MethodOverloadWithOptionalParameter
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AppendFormatted<T>(T value, string? format)
+        {
+            if (value is IFormattable formattable)
+            {
+                _sb.Append(formattable.ToString(format, null));
+            }
+            else if (value != null)
+            {
+                // ReSharper disable once RedundantToStringCallForValueType
+                _sb.Append(value.ToString());
+            }
+        }
     }
 }

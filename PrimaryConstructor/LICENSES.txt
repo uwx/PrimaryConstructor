@@ -1,4 +1,4 @@
-﻿Uses code from Roslyn (https://github.com/dotnet/roslyn) under MIT:
+﻿Uses code from Roslyn (https://github.com/dotnet/roslyn) and .NET (https://github.com/dotnet/runtime) under MIT:
 
 The MIT License (MIT)
 
