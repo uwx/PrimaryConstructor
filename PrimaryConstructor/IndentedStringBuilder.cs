@@ -4,6 +4,7 @@ using System.Text;
 
 namespace PrimaryConstructor;
 
+// https://improve.dk/using-idispoable-to-write-indented-text/
 internal sealed class IndentedStringBuilder : IDisposable
 {
     private readonly char _indentChar;
