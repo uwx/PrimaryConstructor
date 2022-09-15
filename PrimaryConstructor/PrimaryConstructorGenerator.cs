@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -29,9 +30,9 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
     
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-#if DEBUG
+// #if DEBUG
         // SpinWait.SpinUntil(() => Debugger.IsAttached);
-#endif
+// #endif
 
         var sources = context.SyntaxProvider
             .CreateSyntaxProvider(IsCandidate, Transform)
@@ -106,15 +107,24 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             : "";
 
         var memberList = classSymbol.GetGenerationMembers().ToArray();
-        var arguments = (baseClassConstructorArgs.Length == 0 ? memberList : memberList.Concat(baseClassConstructorArgs))
-            .Select(static m => $"{m.Type} {m.ParameterName}");
+        var arguments = (baseClassConstructorArgs.Length == 0 ? memberList : memberList.Concat(baseClassConstructorArgs)).ToArray();
 
         var source = new IndentedStringBuilder(' ', 4);
 
         source.AppendLine($"namespace {namespaceName};");
 
-        var ct = classSymbol.ContainingType;
-        while (ct != null)
+        var cts = new List<INamedTypeSymbol>();
+        {
+            var ct = classSymbol.ContainingType;
+            while (ct != null)
+            {
+                cts.Add(ct);
+                ct = ct.ContainingType;
+            }
+        }
+        cts.Reverse();
+        
+        foreach (var ct in cts)
         {
             var ctFullTypeName = classSymbol.ToDisplayString(TypeFormat);
             var ctGeneric = ctFullTypeName.IndexOf('<') < 0
@@ -124,9 +134,8 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             source.AppendLine($"partial {(ct.IsStructType() ? "struct" : "class")} {ct.Name}{ctGeneric}");
             source.AppendLine("{");
             source.IncreaseIndent();
-            ct = ct.ContainingType;
         }
-
+        
         var fullTypeName = classSymbol.ToDisplayString(TypeFormat);
         var generic = fullTypeName.IndexOf('<') < 0
             ? ""
@@ -136,7 +145,17 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         source.AppendLine("{");
         using (source.IncreaseIndent())
         {
-            source.AppendLine($"public {classSymbol.Name}({string.Join(", ", arguments)}){baseConstructorInheritance}");
+            source.AppendLine($"public {classSymbol.Name}(");
+            using (source.IncreaseIndent())
+            {
+                var i = 0;
+                foreach (var (type, parameterName, name, attributeDatas) in arguments)
+                {
+                    source.AppendLine($"{type} {parameterName}{(i != arguments.Length - 1 ? "," : "")}");
+                    i++;
+                }
+            }
+            source.AppendLine($"){baseConstructorInheritance}");
             source.AppendLine("{");
             using (source.IncreaseIndent())
             {
@@ -150,13 +169,11 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             source.AppendLine("partial void Constructor();");
         }
         source.AppendLine("}");
-        
-        ct = classSymbol.ContainingType;
-        while (ct != null)
+
+        foreach (var _ in cts)
         {
             source.DecreaseIndent();
             source.AppendLine("}");
-            ct = ct.ContainingType;
         }
 
         return source.ToString();
@@ -215,7 +232,7 @@ internal static class RosylnExtensions
     
                 yield return new MemberSymbolInfo
                 {
-                    Type = field.Type.ToDisplayString(PropertyTypeFormat),
+                    Type = field.Type.GetCompilableName(),
                     ParameterName = field.Name.ToCamelCase(),
                     Name = field.Name,
                     Attributes = field.GetAttributes()
@@ -228,12 +245,101 @@ internal static class RosylnExtensions
                 
                 yield return new MemberSymbolInfo
                 {
-                    Type = prop.Type.ToDisplayString(PropertyTypeFormat),
+                    Type = prop.Type.GetCompilableName(),
                     ParameterName = prop.Name.ToCamelCase(),
                     Name = prop.Name,
                     Attributes = prop.GetAttributes()
                 };
             }
+        }
+    }
+    
+    private const string GlobalNamespaceValue = "<global namespace>";
+
+    // https://github.com/dotnet/runtime/blob/main/src/libraries/System.Text.Json/gen/Reflection/TypeExtensions.cs
+    public static string GetCompilableName(this ITypeSymbol typeSymbol)
+    {
+        if (typeSymbol is IArrayTypeSymbol)
+        {
+            return GetCompilableName(typeSymbol) + "[]";
+        }
+
+        if (typeSymbol.TypeKind == TypeKind.TypeParameter)
+        {
+            return typeSymbol.MetadataName;
+        }
+
+        StringBuilder sb = new();
+
+        sb.Append("global::");
+
+        var @namespace = typeSymbol.ContainingNamespace?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.OmittedAsContaining));
+        if (!string.IsNullOrEmpty(@namespace) && @namespace != GlobalNamespaceValue)
+        {
+            sb.Append(@namespace);
+            sb.Append('.');
+        }
+
+        var argumentIndex = 0;
+        AppendTypeChain(sb, typeSymbol, typeSymbol.GetGenericArguments(), ref argumentIndex);
+
+        return sb.ToString();
+
+        static void AppendTypeChain(StringBuilder sb, ITypeSymbol type, ITypeSymbol[] genericArguments, ref int argumentIndex)
+        {
+            var declaringType = type.ContainingType?.ConstructedFrom;
+            if (declaringType != null)
+            {
+                AppendTypeChain(sb, declaringType, genericArguments, ref argumentIndex);
+                sb.Append('.');
+            }
+            var backTickIndex = type.MetadataName.IndexOf('`');
+            if (backTickIndex == -1)
+            {
+                sb.Append(type.MetadataName);
+            }
+            else
+            {
+                sb.Append(type.MetadataName, 0, backTickIndex);
+
+                sb.Append('<');
+
+                var startIndex = argumentIndex;
+                argumentIndex = type.GetGenericArguments().Length;
+                for (var i = startIndex; i < argumentIndex; i++)
+                {
+                    if (i != startIndex)
+                    {
+                        sb.Append(", ");
+                    }
+
+                    sb.Append(GetCompilableName(genericArguments[i]));
+                }
+
+                sb.Append('>');
+            }
+        }
+    }
+    
+    private static ITypeSymbol[] GetGenericArguments(this ITypeSymbol typeSymbol)
+    {
+        if (typeSymbol is not INamedTypeSymbol { IsGenericType: true } namedTypeSymbol)
+        {
+            return Array.Empty<ITypeSymbol>();
+        }
+
+        var args = new List<ITypeSymbol>();
+        AddTypeArguments(args, namedTypeSymbol);
+        return args.ToArray();
+
+        static void AddTypeArguments(List<ITypeSymbol> args, INamedTypeSymbol typeSymbol)
+        {
+            if (typeSymbol.ContainingType != null)
+            {
+                AddTypeArguments(args, typeSymbol.ContainingType);
+            }
+
+            args.AddRange(typeSymbol.TypeArguments);
         }
     }
 
