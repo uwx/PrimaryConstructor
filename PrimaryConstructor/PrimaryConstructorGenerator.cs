@@ -21,12 +21,63 @@ public readonly record struct MemberSymbolInfo(
 public readonly record struct ConstructorSymbolInfo(
     MemberSymbolInfo[] Parameters
 );
-    
+
+
+// internal class SyntaxReceiver : ISyntaxReceiver
+// {
+//     public IList<ClassDeclarationSyntax> CandidateClasses { get; } = new List<ClassDeclarationSyntax>();
+//
+//     /// <summary>
+//     /// Called for every syntax node in the compilation, we can inspect the nodes and save any information useful for generation
+//     /// </summary>
+//     public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
+//     {
+//         // any field with at least one attribute is a candidate for property generation
+//         if (syntaxNode is ClassDeclarationSyntax { AttributeLists.Count: > 0 } classDeclarationSyntax)
+//         {
+//             CandidateClasses.Add(classDeclarationSyntax);
+//         }
+//     }
+// }
 
 [Generator]
 internal class PrimaryConstructorGenerator : IIncrementalGenerator
 {
     private static readonly string AttributeName = nameof(PrimaryConstructorAttribute).Replace("Attribute", "");
+    
+    
+    // public void Initialize(GeneratorInitializationContext context)
+    // {
+    //     context.RegisterForSyntaxNotifications(() => new SyntaxReceiver());
+    // }
+    //
+    // public void Execute(GeneratorExecutionContext context)
+    // {
+    //     if (context.SyntaxReceiver is not SyntaxReceiver receiver)
+    //         return;
+    //
+    //     var classSymbols = GetClassSymbols(context, receiver);
+    //     var classNames = new Dictionary<string, int>();
+    //     foreach (var classSymbol in classSymbols)
+    //     {
+    //         classNames.TryGetValue(classSymbol.Name, out var i);
+    //         var name = i == 0 ? classSymbol.Name : $"{classSymbol.Name}{i + 1}";
+    //         classNames[classSymbol.Name] = i + 1;
+    //         context.AddSource($"{name}-{Guid.NewGuid()}.PrimaryConstructor.g.cs",
+    //             SourceText.From(CreatePrimaryConstructor(classSymbol), Encoding.UTF8));
+    //     }
+    // }
+    //
+    // private static IEnumerable<INamedTypeSymbol> GetClassSymbols(GeneratorExecutionContext context, SyntaxReceiver receiver)
+    // {
+    //     var compilation = context.Compilation;
+    //
+    //     return from clazz in receiver.CandidateClasses
+    //         let model = compilation.GetSemanticModel(clazz.SyntaxTree)
+    //         select model.GetDeclaredSymbol(clazz)! into classSymbol
+    //         where classSymbol.HasAttribute(nameof(PrimaryConstructorAttribute))
+    //         select classSymbol;
+    // }
     
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -36,17 +87,18 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
 
         var sources = context.SyntaxProvider
             .CreateSyntaxProvider(IsCandidate, Transform)
-            .Where(static s => s != null)
-            .WithComparer(SymbolEqualityComparer.IncludeNullability);
+            .Where(static s => s.classSymbol != null);
+            // .WithComparer(SymbolEqualityComparer.IncludeNullability);
 
         context.RegisterSourceOutput(sources, GenerateCode);
     }
 
-    private static void GenerateCode(SourceProductionContext ctx, INamedTypeSymbol? classSymbol)
+    private static void GenerateCode(SourceProductionContext ctx, (INamedTypeSymbol? classSymbol, Compilation compilation) a)
     {
+        var (classSymbol, compilation) = a;
         ctx.AddSource(
             $"{classSymbol!.ToDisplayString(FileNameFormat)}-{Guid.NewGuid()}.g.cs",
-            CreatePrimaryConstructor(classSymbol)
+            CreatePrimaryConstructor(classSymbol, compilation)
         );
     }
 
@@ -62,17 +114,17 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             .Any(static a => a.IsNamed(AttributeName));
     }
         
-    private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
+    private static (INamedTypeSymbol classSymbol, Compilation Compilation) Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
     {
         var typeDeclaration = (TypeDeclarationSyntax)context.Node;
         if (cancellationToken.IsCancellationRequested || !typeDeclaration.ContainsAttribute(context.SemanticModel, GetAttributeSymbol(context.SemanticModel)))
         {
-            return null;
+            return default;
         }
             
         var classSymbol = context.SemanticModel.GetDeclaredSymbol(typeDeclaration)!;
-            
-        return classSymbol;
+        
+        return (classSymbol, context.SemanticModel.Compilation);
     }
 
     private static INamedTypeSymbol GetAttributeSymbol(SemanticModel model)
@@ -97,11 +149,11 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.None
     );
 
-    private static string CreatePrimaryConstructor(INamedTypeSymbol classSymbol)
+    private static string CreatePrimaryConstructor(INamedTypeSymbol classSymbol, Compilation compilation)
     {
         var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
 
-        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers().ToArray();
+        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers(compilation).ToArray();
         var baseConstructorInheritance = baseClassConstructorArgs.Length > 0
             ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(static m => m.ParameterName))})"
             : "";
@@ -145,6 +197,7 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         source.AppendLine("{");
         using (source.IncreaseIndent())
         {
+            source.AppendLine($"[{nameof(SynthesizedPrimaryConstructorAttribute).Substring(0, nameof(SynthesizedPrimaryConstructorAttribute).Length - "Attribute".Length)}]");
             source.AppendLine($"public {classSymbol.Name}(");
             using (source.IncreaseIndent())
             {
@@ -223,12 +276,17 @@ internal static class RosylnExtensions
         
         foreach (var symbol in classSymbol.GetMembers())
         {
+            // _logwriter.WriteLine($"- {symbol.Name}");
             if (!symbol.CanBeReferencedByName || symbol.IsStatic) continue;
+            // _logwriter.WriteLine($"-- CanBeReferencedByName && !IsStatic");
 
             if (symbol is IFieldSymbol field)
             {
+                // _logwriter.WriteLine($"-- field");
                 if ((!field.IsReadOnly || field.HasFieldInitializer()) && !field.HasAttribute(includePrimaryConstructor)) continue;
+                // _logwriter.WriteLine($"-- readonly and doesnt have initializer or has include attr");
                 if (field.HasAttribute(ignorePrimaryConstructor)) continue;
+                // _logwriter.WriteLine($"-- doesnt have ignore attr");
     
                 yield return new MemberSymbolInfo
                 {
@@ -240,8 +298,14 @@ internal static class RosylnExtensions
             }
             else if (symbol is IPropertySymbol prop)
             {
+                // _logwriter.WriteLine($"-- prop");
+                // _logwriter.WriteLine($"-- IsReadOnly {prop.IsReadOnly}");
+                // _logwriter.WriteLine($"-- HasPropertyInitializer {prop.HasPropertyInitializer()}");
+                // _logwriter.WriteLine($"-- IsAutoProperty {prop.IsAutoProperty()}");
                 if ((!prop.IsReadOnly || prop.HasPropertyInitializer() || !prop.IsAutoProperty()) && !prop.HasAttribute(includePrimaryConstructor)) continue;
+                // _logwriter.WriteLine($"-- readonly and doesnt have initializer or has include attr");
                 if (prop.HasAttribute(ignorePrimaryConstructor)) continue;
+                // _logwriter.WriteLine($"-- doesnt have ignore attr");
                 
                 yield return new MemberSymbolInfo
                 {
@@ -343,8 +407,13 @@ internal static class RosylnExtensions
         }
     }
 
-    public static IEnumerable<MemberSymbolInfo> GetBaseTypeGenerationMembers(this INamedTypeSymbol? classSymbol)
+    // private static readonly TextWriter _logwriter = new StreamWriter(@"F:\Stuff1tb\GitHub\Dsharp\Poki\PrimaryConstructor\PrimaryConstructor\saveme." + Process.GetCurrentProcess().MainModule.ModuleName + "." + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ".txt", true);
+
+    public static IEnumerable<MemberSymbolInfo> GetBaseTypeGenerationMembers(
+        this INamedTypeSymbol? classSymbol, Compilation compilation
+    )
     {
+        // _logwriter.WriteLine("In classSymbol: " + classSymbol.GetCompilableName());
         while ((classSymbol = classSymbol?.BaseType) != null)
         {
             if (classSymbol.Name is nameof(Object) or nameof(ValueType))
@@ -352,14 +421,49 @@ internal static class RosylnExtensions
                 yield break;
             }
 
-            if (classSymbol.HasAttribute(nameof(PrimaryConstructorAttribute)))
+            // if (classSymbol.MetadataName == "PaneController")
+            // {
+            //     _logwriter.WriteLine(classSymbol.MetadataName + " memnames: \n" +
+            //                                         string.Join(", ", classSymbol.MemberNames) + ";;;;; members: \n" +
+            //                                         string.Join(", ", classSymbol.GetMembers().Select(e => e.Name)) + ";;;;;;;;;;;;;;\n" + string.Join(", ", classSymbol.GetAttributes().Select(e => e.AttributeClass?.MetadataName)));
+            // }
+
+            // classSymbol = compilation.GetTypeByMetadataName(classSymbol.MetadataName) ?? throw new InvalidOperationException("No INamedTypeSymbol for type: " + classSymbol.MetadataName);
+            
+            // _logwriter.WriteLine("In baseType: " + classSymbol.GetCompilableName());
+
+            var constructors = classSymbol.GetMembers()
+                .OfType<IMethodSymbol>()
+                .Where(static e => e.MethodKind == MethodKind.Constructor)
+                .ToArray();
+
+            if (constructors.FirstOrDefault(static e => e.HasAttribute(nameof(SynthesizedPrimaryConstructorAttribute))) is {} synthesizedBaseConstructor)
             {
+                var i = 0;
+                foreach (var parameter in synthesizedBaseConstructor.Parameters)
+                {
+                    yield return new MemberSymbolInfo
+                    {
+                        Type = parameter.Type.ToDisplayString(PropertyTypeFormat),
+                        ParameterName = string.IsNullOrWhiteSpace(parameter.Name) ? $"__param{i}" : parameter.Name,
+                        Name = string.IsNullOrWhiteSpace(parameter.Name) ? $"Param{i}" : parameter.Name,
+                        Attributes = ImmutableArray<AttributeData>.Empty
+                    };
+                    i++;
+                }
+
+                yield break; // there is no need to go back further
+            }
+            else if (classSymbol.HasAttribute(nameof(PrimaryConstructorAttribute)))
+            {
+                // _logwriter.WriteLine("Got PrimaryConstructorAttr");
                 foreach (var member in classSymbol.GetGenerationMembers())
                 {
+                    // _logwriter.WriteLine("Got member: " + member);
                     yield return member;
                 }
             }
-            else if (classSymbol.GetRelevantConstructor() is { } relevantConstructor &&
+            else if (classSymbol.GetRelevantConstructor(constructors) is { } relevantConstructor &&
                      relevantConstructor.Parameters.Length > 0)
             {
                 foreach (var parameter in relevantConstructor.Parameters)
@@ -370,20 +474,16 @@ internal static class RosylnExtensions
         }
     }
 
-    public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol)
+    public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol, IMethodSymbol[] constructors)
     {
-        var members = classSymbol.GetMembers()
-            .OfType<IMethodSymbol>()
-            .Where(static e => e.MethodKind == MethodKind.Constructor);
-
         // ReSharper disable once PossibleMultipleEnumeration
-        var bestConstructor = members
+        var bestConstructor = constructors
             .FirstOrDefault(static e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
 
         if (bestConstructor == null)
         {
             // ReSharper disable once PossibleMultipleEnumeration
-            bestConstructor = members
+            bestConstructor = constructors
                 .OrderByDescending(static e => e.Parameters.Length)
                 .FirstOrDefault();
         }
