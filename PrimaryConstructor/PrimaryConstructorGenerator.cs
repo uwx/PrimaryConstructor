@@ -302,6 +302,7 @@ internal static class RosylnExtensions
                 // _logwriter.WriteLine($"-- IsReadOnly {prop.IsReadOnly}");
                 // _logwriter.WriteLine($"-- HasPropertyInitializer {prop.HasPropertyInitializer()}");
                 // _logwriter.WriteLine($"-- IsAutoProperty {prop.IsAutoProperty()}");
+                // NB: IsAutoProperty check WILL ALWAYS RETURN FALSE when the property is in an outside referenced assembly and not part of the compilation. This is why we use SynthesizedPrimaryConstructorAttribute.
                 if ((!prop.IsReadOnly || prop.HasPropertyInitializer() || !prop.IsAutoProperty()) && !prop.HasAttribute(includePrimaryConstructor)) continue;
                 // _logwriter.WriteLine($"-- readonly and doesnt have initializer or has include attr");
                 if (prop.HasAttribute(ignorePrimaryConstructor)) continue;
