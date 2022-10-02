@@ -81,24 +81,23 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
     
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-// #if DEBUG
+#if DEBUG
         // SpinWait.SpinUntil(() => Debugger.IsAttached);
-// #endif
+#endif
 
         var sources = context.SyntaxProvider
             .CreateSyntaxProvider(IsCandidate, Transform)
-            .Where(static s => s.classSymbol != null);
-            // .WithComparer(SymbolEqualityComparer.IncludeNullability);
+            .Where(static s => s != null)
+            .WithComparer(SymbolEqualityComparer.IncludeNullability);
 
         context.RegisterSourceOutput(sources, GenerateCode);
     }
 
-    private static void GenerateCode(SourceProductionContext ctx, (INamedTypeSymbol? classSymbol, Compilation compilation) a)
+    private static void GenerateCode(SourceProductionContext ctx, INamedTypeSymbol? classSymbol)
     {
-        var (classSymbol, compilation) = a;
         ctx.AddSource(
             $"{classSymbol!.ToDisplayString(FileNameFormat)}-{Guid.NewGuid()}.g.cs",
-            CreatePrimaryConstructor(classSymbol, compilation)
+            CreatePrimaryConstructor(classSymbol)
         );
     }
 
@@ -114,17 +113,17 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             .Any(static a => a.IsNamed(AttributeName));
     }
         
-    private static (INamedTypeSymbol classSymbol, Compilation Compilation) Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
+    private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
     {
         var typeDeclaration = (TypeDeclarationSyntax)context.Node;
         if (cancellationToken.IsCancellationRequested || !typeDeclaration.ContainsAttribute(context.SemanticModel, GetAttributeSymbol(context.SemanticModel)))
         {
-            return default;
+            return null;
         }
             
         var classSymbol = context.SemanticModel.GetDeclaredSymbol(typeDeclaration)!;
         
-        return (classSymbol, context.SemanticModel.Compilation);
+        return classSymbol;
     }
 
     private static INamedTypeSymbol GetAttributeSymbol(SemanticModel model)
@@ -149,11 +148,11 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.None
     );
 
-    private static string CreatePrimaryConstructor(INamedTypeSymbol classSymbol, Compilation compilation)
+    private static string CreatePrimaryConstructor(INamedTypeSymbol classSymbol)
     {
         var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
 
-        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers(compilation).ToArray();
+        var baseClassConstructorArgs = classSymbol.GetBaseTypeGenerationMembers().ToArray();
         var baseConstructorInheritance = baseClassConstructorArgs.Length > 0
             ? $" : base({string.Join(", ", baseClassConstructorArgs.Select(static m => m.ParameterName))})"
             : "";
@@ -411,7 +410,7 @@ internal static class RosylnExtensions
     // private static readonly TextWriter _logwriter = new StreamWriter(@"F:\Stuff1tb\GitHub\Dsharp\Poki\PrimaryConstructor\PrimaryConstructor\saveme." + Process.GetCurrentProcess().MainModule.ModuleName + "." + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ".txt", true);
 
     public static IEnumerable<MemberSymbolInfo> GetBaseTypeGenerationMembers(
-        this INamedTypeSymbol? classSymbol, Compilation compilation
+        this INamedTypeSymbol? classSymbol
     )
     {
         // _logwriter.WriteLine("In classSymbol: " + classSymbol.GetCompilableName());
