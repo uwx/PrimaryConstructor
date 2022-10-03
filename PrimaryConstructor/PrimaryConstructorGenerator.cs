@@ -109,8 +109,7 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         }
 
         return typeDeclaration.AttributeLists
-            .SelectMany(static l => l.Attributes)
-            .Any(static a => a.IsNamed(AttributeName));
+            .Any(static l => l.Attributes.Any(static a => a.IsNamed(AttributeName)));
     }
         
     private static INamedTypeSymbol? Transform(GeneratorSyntaxContext context, CancellationToken cancellationToken)
@@ -243,6 +242,8 @@ internal static class RosylnExtensions
                               SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
     );
 
+    private static readonly SymbolDisplayFormat CompilableNamespaceStyle = SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.OmittedAsContaining);
+
     public static bool HasFieldInitializer(this IFieldSymbol symbol)
     {
         var field = symbol.DeclaringSyntaxReferences.ElementAtOrDefault(0)?.GetSyntax() as VariableDeclaratorSyntax;
@@ -337,7 +338,7 @@ internal static class RosylnExtensions
 
         sb.Append("global::");
 
-        var @namespace = typeSymbol.ContainingNamespace?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.OmittedAsContaining));
+        var @namespace = typeSymbol.ContainingNamespace?.ToDisplayString(CompilableNamespaceStyle);
         if (!string.IsNullOrEmpty(@namespace) && @namespace != GlobalNamespaceValue)
         {
             sb.Append(@namespace);
@@ -349,7 +350,7 @@ internal static class RosylnExtensions
 
         return sb.ToString();
 
-        static void AppendTypeChain(StringBuilder sb, ITypeSymbol type, ITypeSymbol[] genericArguments, ref int argumentIndex)
+        static void AppendTypeChain(StringBuilder sb, ITypeSymbol type, List<ITypeSymbol>? genericArguments, ref int argumentIndex)
         {
             var declaringType = type.ContainingType?.ConstructedFrom;
             if (declaringType != null)
@@ -369,7 +370,7 @@ internal static class RosylnExtensions
                 sb.Append('<');
 
                 var startIndex = argumentIndex;
-                argumentIndex = type.GetGenericArguments().Length;
+                argumentIndex = type.GetGenericArguments()?.Count ?? 0;
                 for (var i = startIndex; i < argumentIndex; i++)
                 {
                     if (i != startIndex)
@@ -377,7 +378,7 @@ internal static class RosylnExtensions
                         sb.Append(", ");
                     }
 
-                    sb.Append(GetCompilableName(genericArguments[i]));
+                    sb.Append(GetCompilableName(genericArguments![i]));
                 }
 
                 sb.Append('>');
@@ -385,16 +386,16 @@ internal static class RosylnExtensions
         }
     }
     
-    private static ITypeSymbol[] GetGenericArguments(this ITypeSymbol typeSymbol)
+    private static List<ITypeSymbol>? GetGenericArguments(this ITypeSymbol typeSymbol)
     {
         if (typeSymbol is not INamedTypeSymbol { IsGenericType: true } namedTypeSymbol)
         {
-            return Array.Empty<ITypeSymbol>();
+            return null;
         }
 
         var args = new List<ITypeSymbol>();
         AddTypeArguments(args, namedTypeSymbol);
-        return args.ToArray();
+        return args;
 
         static void AddTypeArguments(List<ITypeSymbol> args, INamedTypeSymbol typeSymbol)
         {
@@ -463,26 +464,25 @@ internal static class RosylnExtensions
                     yield return member;
                 }
             }
-            else if (classSymbol.GetRelevantConstructor(constructors) is { } relevantConstructor &&
-                     relevantConstructor.Parameters.Length > 0)
+            else if (classSymbol.GetRelevantConstructor(constructors) is { } relevantConstructor)
             {
                 foreach (var parameter in relevantConstructor.Parameters)
                 {
                     yield return parameter;
                 }
+                
+                // TODO could put yield break here
             }
         }
     }
 
     public static ConstructorSymbolInfo? GetRelevantConstructor(this INamedTypeSymbol classSymbol, IMethodSymbol[] constructors)
     {
-        // ReSharper disable once PossibleMultipleEnumeration
         var bestConstructor = constructors
             .FirstOrDefault(static e => e.HasAttribute(nameof(UseForPrimaryConstructorAttribute)));
 
         if (bestConstructor == null)
         {
-            // ReSharper disable once PossibleMultipleEnumeration
             bestConstructor = constructors
                 .OrderByDescending(static e => e.Parameters.Length)
                 .FirstOrDefault();
