@@ -176,7 +176,7 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
         
         foreach (var ct in cts)
         {
-            var ctFullTypeName = classSymbol.ToDisplayString(TypeFormat);
+            var ctFullTypeName = ct.ToDisplayString(TypeFormat);
             var ctGeneric = ctFullTypeName.IndexOf('<') < 0
                 ? ""
                 : ctFullTypeName.Substring(ctFullTypeName.IndexOf('<'));
