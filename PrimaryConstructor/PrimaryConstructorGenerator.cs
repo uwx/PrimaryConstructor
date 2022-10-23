@@ -200,9 +200,9 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             using (source.IncreaseIndent())
             {
                 var i = 0;
-                foreach (var (type, parameterName, name, attributeDatas) in arguments)
+                foreach (var arg in arguments)
                 {
-                    source.AppendLine($"{type} {parameterName}{(i != arguments.Length - 1 ? "," : "")}");
+                    source.AppendLine($"{arg.Type} {arg.ParameterName}{(i != arguments.Length - 1 ? "," : "")}");
                     i++;
                 }
             }
@@ -210,9 +210,9 @@ internal class PrimaryConstructorGenerator : IIncrementalGenerator
             source.AppendLine("{");
             using (source.IncreaseIndent())
             {
-                foreach (var item in memberList)
+                foreach (var member in memberList)
                 {
-                    source.AppendLine($@"this.{item.Name} = {item.ParameterName};");
+                    source.AppendLine($@"this.{member.Name} = {member.ParameterName};");
                 }
                 source.AppendLine("this.Constructor();");
             }
